@@ -1,0 +1,33 @@
+# Compilation databases
+compile_commands.json
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Generated ascii-keymaps
+*/asciimaps/*
+
+# Clangd
+.cache/*
+
+# Build artifacts
+*.bin
+*.hex
+*.uf2
+*.elf
+*.map
+
+# Editor files
+.vscode/*
+!.vscode/settings.json     
+!.vscode/extensions.json   
+.vscode/launch.json        
+.vscode/tasks.json         
+.idea/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

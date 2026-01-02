@@ -1,0 +1,260 @@
+
+name: Build KKB Firmware
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'keyboards/kkb/**'
+      - 'qmk_firmware'
+      - 'tools/**'
+      - '.github/workflows/**'
+      - '!**.md'
+      - '!LICENSE'
+
+  pull_request:
+    branches: [ master ]
+
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Firmware
+    runs-on: ubuntu-latest
+    container: ghcr.io/qmk/qmk_cli:latest
+
+    steps:
+
+      # ========================================================================
+      # Configure git ownership
+      # ========================================================================
+
+      - name: Configure git for container
+        run: git config --global --add safe.directory '*'
+
+      # ========================================================================
+      # Checkout repositories and initialize submodules with caching
+      # ========================================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false  # Don't fetch submodules yet
+
+      - name: Generate submodule cache key
+        id: submodule-hash
+        run: |
+          # Generate hash based on .gitmodules and submodule commits
+          HASH=$(git submodule status --recursive | sha256sum | cut -d' ' -f1)
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+          echo "Submodule hash: $HASH"
+
+      - name: Cache submodules
+        id: cache-submodules
+        uses: actions/cache@v4
+        with:
+          path: |
+            .git/modules
+            qmk_firmware
+          key: submodules-${{ runner.os }}-${{ steps.submodule-hash.outputs.hash }}
+          restore-keys: |
+            submodules-${{ runner.os }}-
+
+      - name: Initialize submodules (cache miss)
+        if: steps.cache-submodules.outputs.cache-hit != 'true'
+        run: |
+          echo "Cache miss - initializing submodules recursively"
+          git submodule update --init --recursive
+
+      - name: Update submodules (cache hit)
+        if: steps.cache-submodules.outputs.cache-hit == 'true'
+        run: |
+          echo "Cache hit - updating submodules"
+          git submodule update --recursive
+
+      - name: Symlink custom keyboard
+        run: ln -sf "$(pwd)/keyboards/kkb" qmk_firmware/keyboards/kkb
+
+      # ========================================================================
+      # Discover available keymaps for kkb
+      # ========================================================================
+
+      - name: Find keymaps
+        id: find-keymaps
+        working-directory: qmk_firmware
+        run: |
+          set -e
+
+          KEYMAPS=$(find keyboards/kkb/keymaps -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+
+          if [ -z "$KEYMAPS" ]; then
+            echo "❌ Error: No keymaps found!"
+            exit 1
+          fi
+
+          # Store as multiline string for step output
+          echo "keymaps<<EOF" >> $GITHUB_OUTPUT
+          echo "$KEYMAPS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "Found keymaps:"
+          echo "$KEYMAPS" | sed 's/^/  - /'
+          echo ""
+
+      # ========================================================================
+      # Check Keyboard and all Keymaps using QMK Lint
+      # ========================================================================
+
+      - name: Check all Keymaps
+        working-directory: qmk_firmware
+        run: |
+          set -e
+
+          # Read keymaps from previous step output
+          KEYMAPS="${{ steps.find-keymaps.outputs.keymaps }}"
+
+          FAILED=0
+          SUCCESS=0
+          FAILED_KEYMAPS=""
+
+          for KEYMAP in $KEYMAPS; do
+            echo "========================================"
+            echo "Checking: kkb:$KEYMAP"
+            echo "========================================"
+
+            if qmk lint -kb kkb -km "$KEYMAP" --strict; then
+              echo "✓ kkb:$KEYMAP checked successfully"
+              SUCCESS=$((SUCCESS + 1))
+            else
+              echo "✗ kkb:$KEYMAP failed lint checks"
+              FAILED=$((FAILED + 1))
+              FAILED_KEYMAPS="$FAILED_KEYMAPS  - $KEYMAP\n"
+            fi
+            echo ""
+          done
+
+          echo "========================================"
+          echo "LINT CHECK SUMMARY"
+          echo "========================================"
+          echo "✓ Successful: $SUCCESS"
+          echo "✗ Failed: $FAILED"
+
+          if [ $FAILED -gt 0 ]; then
+            echo ""
+            echo "Failed keymaps:"
+            echo -e "$FAILED_KEYMAPS"
+            exit 1
+          fi
+
+          echo ""
+          echo "🎉 All keymaps checked successfully!"
+
+      # ========================================================================
+      # Compile All Keymaps
+      # ========================================================================
+
+      - name: Compile all keymaps
+        working-directory: qmk_firmware
+        run: |
+          set -e
+
+          # Read keymaps from previous step output
+          KEYMAPS="${{ steps.find-keymaps.outputs.keymaps }}"
+
+          echo "========================================"
+          echo "Compiling keymaps for keyboard: kkb"
+          echo "========================================"
+
+          FAILED=0
+          SUCCESS=0
+          FAILED_KEYMAPS=""
+
+          for KEYMAP in $KEYMAPS; do
+            echo "========================================"
+            echo "Compiling: kkb:$KEYMAP"
+            echo "========================================"
+
+            if qmk compile -kb kkb -km "$KEYMAP"; then
+              echo "✓ kkb:$KEYMAP compiled successfully"
+              SUCCESS=$((SUCCESS + 1))
+            else
+              echo "✗ kkb:$KEYMAP failed to compile"
+              FAILED=$((FAILED + 1))
+              FAILED_KEYMAPS="$FAILED_KEYMAPS  - $KEYMAP\n"
+            fi
+            echo ""
+          done
+
+          echo "========================================"
+          echo "COMPILATION SUMMARY"
+          echo "========================================"
+          echo "✓ Successful: $SUCCESS"
+          echo "✗ Failed: $FAILED"
+
+          if [ $FAILED -gt 0 ]; then
+            echo ""
+            echo "Failed keymaps:"
+            echo -e "$FAILED_KEYMAPS"
+            exit 1
+          fi
+
+          echo ""
+          echo "🎉 All keymaps compiled successfully!"
+
+      # ========================================================================
+      # ASCII Map Generation
+      # ========================================================================
+
+      - name: Check Python version
+        run: python3 --version
+
+      - name: Generate ASCII maps for all keymaps and layouts
+        run: |
+          cd tools
+          python3 asciimaps_all.py
+        continue-on-error: false
+
+      - name: List generated ASCII maps
+        run: |
+          echo "========================================"
+          echo "Generated ASCII Maps:"
+          echo "========================================"
+          ls -lh tools/asciimaps/
+          echo ""
+          if [ -f tools/asciimaps/INDEX.md ]; then
+            echo "Index file contents:"
+            echo "========================================"
+            cat tools/asciimaps/INDEX.md
+          fi
+
+      - name: Prepare artifact name
+        id: artifact-name
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # PR artifacts: Unique per PR
+            echo "name=ascii-keymaps-pr${{ github.event.number }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" = "refs/heads/master" ]; then
+            # Main branch: Include run number for uniqueness
+            echo "name=ascii-keymaps-master-${{ github.run_number }}" >> $GITHUB_OUTPUT
+          else
+            # Other: Use run number
+            echo "name=ascii-keymaps-run${{ github.run_number }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload ASCII maps as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact-name.outputs.name }}
+          path: tools/asciimaps/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Build summary
+        run: |
+          echo "✓ All keymaps compiled successfully"
+          echo "✓ ASCII maps generated successfully"
+          echo "✓ Artifacts uploaded: ${{ steps.artifact-name.outputs.name }}"
