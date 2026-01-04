@@ -1,12 +1,15 @@
 name: Deploy Documentation
 
 on:
-  # push:
-  #   branches: [master]
-  #   paths:
-  #     - 'keyboards/kkb/keymaps/**'
-  #     - 'keyboards/kkb/info.json'
-  #     - 'tools/**'
+  push:
+    branches: [master]
+    paths:
+      - 'keyboards/kkb/**'
+      - 'qmk_firmware'
+      - 'tools/**'
+      - '.github/workflows/**'
+      - '!**.md'
+      - '!LICENSE'
 
   workflow_dispatch:
 
